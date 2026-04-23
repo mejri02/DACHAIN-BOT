@@ -193,7 +193,7 @@ class APIClient:
             pass
         return None
 
-    def request(self, method, endpoint, data=None, retry=2):
+    def request(self, method, endpoint, data=None):
         url = f"{self.base_url}{endpoint}"
         headers = {
             'Content-Type': 'application/json',
@@ -202,37 +202,24 @@ class APIClient:
         if self.csrf_token:
             headers['X-CSRFToken'] = self.csrf_token
         
-        for attempt in range(retry + 1):
-            try:
-                if method == "GET":
-                    response = self.session.get(url, headers=headers, timeout=45)
-                else:
-                    response = self.session.post(url, headers=headers, json=data, timeout=45)
-                
-                if response.status_code == 403 and "CSRF" in response.text and self.csrf_token:
-                    self.get_csrf_token()
-                    if self.csrf_token:
-                        headers['X-CSRFToken'] = self.csrf_token
-                        if method == "GET":
-                            response = self.session.get(url, headers=headers, timeout=45)
-                        else:
-                            response = self.session.post(url, headers=headers, json=data, timeout=45)
-                
-                return response.json()
-            except requests.exceptions.Timeout:
-                if attempt < retry:
-                    log(f"Request timeout, retrying ({attempt+1}/{retry})...", "WARNING")
-                    time.sleep(3)
-                    continue
-                raise Exception("Request timeout after retries")
-            except Exception as e:
-                if attempt < retry:
-                    log(f"Request failed, retrying ({attempt+1}/{retry})...", "WARNING")
-                    time.sleep(3)
-                    continue
-                raise Exception(f"Request failed: {e}")
-        
-        raise Exception("Request failed")
+        try:
+            if method == "GET":
+                response = self.session.get(url, headers=headers, timeout=60)
+            else:
+                response = self.session.post(url, headers=headers, json=data, timeout=60)
+            
+            if response.status_code == 403 and "CSRF" in response.text and self.csrf_token:
+                self.get_csrf_token()
+                if self.csrf_token:
+                    headers['X-CSRFToken'] = self.csrf_token
+                    if method == "GET":
+                        response = self.session.get(url, headers=headers, timeout=60)
+                    else:
+                        response = self.session.post(url, headers=headers, json=data, timeout=60)
+            
+            return response.json()
+        except Exception as e:
+            raise Exception(f"Request failed: {e}")
 
     def get(self, endpoint):
         return self.request("GET", endpoint)
@@ -439,7 +426,7 @@ class DACClient:
                 time_since_claim = (datetime.now(pytz.UTC) - last_claim_time).total_seconds()
                 if time_since_claim < CONFIG["FAUCET_COOLDOWN_SECONDS"]:
                     hours_left = (CONFIG["FAUCET_COOLDOWN_SECONDS"] - time_since_claim) / 3600
-                    log(f"Faucet already claimed - {hours_left:.1f} hours until next claim", "WARNING")
+                    log(f"Faucet available in {int(hours_left)}h {int((hours_left % 1) * 60)}m", "WARNING")
                     return None
             except Exception:
                 pass
@@ -456,14 +443,12 @@ class DACClient:
             elif result and result.get('error'):
                 error_msg = result.get('error', '')
                 if 'cooldown' in error_msg.lower():
-                    log(f"Faucet on cooldown (8 hours)", "WARNING")
+                    log(f"Faucet available in {error_msg.split('in')[1].strip() if 'in' in error_msg else '8 hours'}", "WARNING")
                 else:
                     log(f"Faucet error: {error_msg}", "WARNING")
         except Exception as e:
             if '429' in str(e):
-                log(f"Faucet rate limited - on cooldown", "WARNING")
-            else:
-                log(f"Faucet claim failed: {e}", "WARNING")
+                log(f"Faucet on cooldown (8 hours)", "WARNING")
         return None
 
     def get_crate_history(self):
@@ -497,8 +482,6 @@ class DACClient:
         except Exception as e:
             if 'already' in str(e).lower() or 'claimed' in str(e).lower():
                 pass
-            else:
-                log(f"Failed to claim badge: {e}", "WARNING")
         return None
 
     def sync_chain(self):
@@ -530,8 +513,7 @@ class DACClient:
 
     def get_network_info(self):
         try:
-            result = self.api.get('/api/inception/network/')
-            return result
+            return self.api.get('/api/inception/network/')
         except Exception:
             return {}
 
